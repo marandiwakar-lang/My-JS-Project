@@ -752,16 +752,22 @@ The application is running a vulnerable version of Next.js that uses React Serve
 
 Attack Payload:
 
+```
 ["$1:a"]
+```
 
 Test using curl:
 
+```
 curl "https://myjavascriptapp.duckdns.org/?email=test@example.com&message=test"
-  
+```
+
 Observed Evidence:
 
+```
 E{"digest"}
-  
+```
+
 The response confirms that the server processes malformed RSC input, indicating a possible execution path vulnerability.
 
 #### Recommended Fix
