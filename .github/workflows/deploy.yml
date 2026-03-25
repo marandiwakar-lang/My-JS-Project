@@ -1,4 +1,4 @@
-name: Deploy App
+name: Full DevOps Deployment
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup server and deploy
+      - name: Full Server Setup + Deploy
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_IP }}
@@ -18,31 +18,57 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
 
-            # 🔹 Create devops user if not exists
+            # -----------------------------
+            # 1. CREATE DEVOPS USER
+            # -----------------------------
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
 
-            # 🔹 Setup SSH for devops
+            # Setup SSH for devops
             sudo mkdir -p /home/devops/.ssh
             sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/
             sudo chown -R devops:devops /home/devops/.ssh
             sudo chmod 700 /home/devops/.ssh
             sudo chmod 600 /home/devops/.ssh/authorized_keys
 
-            # 🔹 Switch to devops user
+            # -----------------------------
+            # 2. HARDEN SSH
+            # -----------------------------
+            sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+            sudo sed -i 's/^#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+            sudo sed -i 's/^#Port 22/Port 22/' /etc/ssh/sshd_config
+
+            sudo systemctl restart ssh || sudo systemctl restart sshd
+
+            # -----------------------------
+            # 3. UFW FIREWALL
+            # -----------------------------
+            sudo ufw allow 22
+            sudo ufw allow 80
+            sudo ufw allow 443
+            sudo ufw --force enable
+
+            # -----------------------------
+            # 4. INSTALL DEPENDENCIES
+            # -----------------------------
+            sudo apt update -y
+            sudo apt install -y nginx curl git
+
+            # -----------------------------
+            # 5. SWITCH TO DEVOPS USER
+            # -----------------------------
             sudo -u devops bash << 'EOF'
 
-            # Load NVM
+            # Load/install NVM
             export NVM_DIR="$HOME/.nvm"
             if [ ! -d "$NVM_DIR" ]; then
               curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
             fi
-
             source $NVM_DIR/nvm.sh
 
-            # Install Node if not exists
+            # Install Node 18
             if ! command -v node >/dev/null; then
               nvm install 18
             fi
@@ -52,7 +78,7 @@ jobs:
               npm install -g pm2
             fi
 
-            # Clone repo if not exists
+            # Clone project if not exists
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
             fi
@@ -65,4 +91,39 @@ jobs:
 
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
 
+            pm2 save
+
             EOF
+
+            # -----------------------------
+            # 6. NGINX CONFIG
+            # -----------------------------
+            sudo tee /etc/nginx/sites-available/default > /dev/null <<EOL
+            server {
+                listen 80;
+                server_name <YOUR_DOMAIN>;
+
+                location / {
+                    proxy_pass http://localhost:3000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade \$http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host \$host;
+                }
+
+                location ~ /\.git {
+                    deny all;
+                }
+            }
+            EOL
+
+            sudo systemctl restart nginx
+
+            # -----------------------------
+            # 7. SSL (CERTBOT)
+            # -----------------------------
+            sudo apt install -y certbot python3-certbot-nginx
+
+            sudo certbot --nginx -d myjavascriptapp.duckdns.org --non-interactive --agree-tos -m marandiwakar@gmail.com || true
+
+            sudo systemctl reload nginx
