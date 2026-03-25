@@ -17,7 +17,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/devops/My-JS-Project
+            cd /home/ubuntu/My-JS-Project
             git pull origin main
             npm install
             npm run build
