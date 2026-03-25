@@ -727,6 +727,82 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 ```
 
 ---
+### V-007: Remote Code Execution (React2Shell - Next.js RSC)
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟠 High                                          |
+| **OWASP Category** | A03: Injection (OWASP Top 10 2021)               |
+| **Affected File**  | Framework-level vulnerability in Next.js React Server Components (RSC). Not limited to a specific file.      |
+| **Affected Line**  | ["$1:a"]                                         |
+
+#### Description
+
+The application is running a vulnerable version of Next.js that uses React Server Components (RSC). Improper handling of specially crafted requests allows attackers to manipulate server-side rendering logic. This can potentially lead to Remote Code Execution (RCE).
+
+#### Business Impact
+
+- Execution of arbitrary code on the server
+- Access to sensitive environment variables (API keys, secrets)
+- Server compromise and unauthorized access
+- Potential full system takeover
+
+#### Proof of Concept
+
+Attack Payload:
+
+["$1:a"]
+
+Test using curl:
+
+curl "https://myjavascriptapp.duckdns.org/?email=test@example.com&message=test"
+  
+Observed Evidence:
+
+E{"digest"}
+  
+The response confirms that the server processes malformed RSC input, indicating a possible execution path vulnerability.
+
+#### Recommended Fix
+
+**1 — Upgrade dependencies (MANDATORY):**
+
+```
+npm install next@latest react@latest react-dom@latest
+```
+
+**2 — Disable vulnerable experimental features:**
+
+```
+// next.config.js
+module.exports = {
+  experimental: {
+    serverActions: false,
+  },
+};
+```
+**3 — Add input validation:**
+
+```
+if (!email.includes("@")) {
+  return res.status(400).json({ error: "Invalid input" });
+}
+```
+
+**4 — Implement rate limiting / WAF:**
+
+```
+// Example: Upstash rate limiting
+import { Ratelimit } from "@upstash/ratelimit";
+```
+
+**Conclusion:**
+
+The application contains multiple high and critical vulnerabilities that must be addressed immediately. Implementing proper access controls, input validation, and secure configurations will significantly improve the security posture of the system.
+
+It is recommended to integrate security into the CI/CD pipeline and perform regular security audits.
+---
 
 ## 3. Threat Scenario Analysis
 
