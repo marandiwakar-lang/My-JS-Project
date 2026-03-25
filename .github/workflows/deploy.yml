@@ -1,26 +1,24 @@
 name: Deploy App
 
 on:
-push:
-branches:
-- main
+  push:
+    branches:
+      - main
 
 jobs:
-deploy:
-runs-on: ubuntu-latest
+  deploy:
+    runs-on: ubuntu-latest
 
-```
-steps:
-  - name: SSH into server and deploy
-    uses: appleboy/ssh-action@v1.0.0
-    with:
-      host: ${{ secrets.SERVER_IP }}
-      username: devops
-      key: ${{ secrets.SSH_KEY }}
-      script: |
-        cd your-project
-        git pull
-        npm install
-        npm run build
-        pm2 restart nextjs-app
-```
+    steps:
+      - name: SSH into server and deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: devops
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/devops/your-project
+            git pull origin main
+            npm install
+            npm run build
+            pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
