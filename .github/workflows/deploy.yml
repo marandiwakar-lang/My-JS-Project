@@ -10,15 +10,59 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: SSH into server and deploy
+      - name: Setup server and deploy
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/ubuntu/My-JS-Project
+
+            # 🔹 Create devops user if not exists
+            if ! id "devops" &>/dev/null; then
+              sudo adduser --disabled-password --gecos "" devops
+              sudo usermod -aG sudo devops
+            fi
+
+            # 🔹 Setup SSH for devops
+            sudo mkdir -p /home/devops/.ssh
+            sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/
+            sudo chown -R devops:devops /home/devops/.ssh
+            sudo chmod 700 /home/devops/.ssh
+            sudo chmod 600 /home/devops/.ssh/authorized_keys
+
+            # 🔹 Switch to devops user
+            sudo -u devops bash << 'EOF'
+
+            # Load NVM
+            export NVM_DIR="$HOME/.nvm"
+            if [ ! -d "$NVM_DIR" ]; then
+              curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+            fi
+
+            source $NVM_DIR/nvm.sh
+
+            # Install Node if not exists
+            if ! command -v node >/dev/null; then
+              nvm install 18
+            fi
+
+            # Install PM2
+            if ! command -v pm2 >/dev/null; then
+              npm install -g pm2
+            fi
+
+            # Clone repo if not exists
+            if [ ! -d "/home/devops/My-JS-Project" ]; then
+              git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
+            fi
+
+            cd /home/devops/My-JS-Project
+
             git pull origin main
             npm install
             npm run build
+
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
+
+            EOF
