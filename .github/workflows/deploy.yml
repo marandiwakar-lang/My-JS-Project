@@ -84,9 +84,11 @@ jobs:
 
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
-
-            pm2 startup systemd -u devops --hp /home/devops
             APPEOF
+
+            # pm2 startup must run as root with the devops node path
+            NODE_BIN="/home/devops/.nvm/versions/node/v20.20.2/bin"
+            sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
 
             # Nginx config
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
