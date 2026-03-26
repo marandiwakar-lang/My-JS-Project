@@ -1,128 +1,162 @@
-name: Full DevOps Deployment
+name: Secure DevOps Deployment
 
 on:
-  push:
-    branches:
-      - main
+push:
+branches:
+- main
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+deploy:
+runs-on: ubuntu-latest
 
-    steps:
-      - name: Full Server Setup + Deploy
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ubuntu
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
+```
+steps:
+  - name: Full Server Setup + Secure Deploy
+    uses: appleboy/ssh-action@v1.0.0
+    with:
+      host: ${{ secrets.SERVER_IP }}
+      username: ubuntu
+      key: ${{ secrets.SSH_PRIVATE_KEY }}
+      script: |
 
-            DOMAIN="myjavascriptapp.duckdns.org"
-            EMAIL="marandiwakar@gmail.com"
+        set -e
 
-            # -----------------------------
-            # 1. CREATE DEVOPS USER
-            # -----------------------------
-            if ! id "devops" &>/dev/null; then
-              sudo adduser --disabled-password --gecos "" devops
-              sudo usermod -aG sudo devops
-            fi
+        DOMAIN="myjavascriptapp.duckdns.org"
+        EMAIL="marandiwakar@gmail.com"
 
-            sudo mkdir -p /home/devops/.ssh
-            sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/
-            sudo chown -R devops:devops /home/devops/.ssh
-            sudo chmod 700 /home/devops/.ssh
-            sudo chmod 600 /home/devops/.ssh/authorized_keys
+        echo "🚀 Starting Secure Deployment..."
 
-            # -----------------------------
-            # 2. SSH HARDENING
-            # -----------------------------
-            sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-            sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-            sudo systemctl restart ssh || sudo systemctl restart sshd
+        # -----------------------------
+        # 1. CREATE DEVOPS USER
+        # -----------------------------
+        if ! id "devops" &>/dev/null; then
+          sudo adduser --disabled-password --gecos "" devops
+          sudo usermod -aG sudo devops
+        fi
 
-            # -----------------------------
-            # 3. FIREWALL
-            # -----------------------------
-            sudo ufw allow 22
-            sudo ufw allow 80
-            sudo ufw allow 443
-            sudo ufw --force enable
+        sudo mkdir -p /home/devops/.ssh
+        sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/
+        sudo chown -R devops:devops /home/devops/.ssh
+        sudo chmod 700 /home/devops/.ssh
+        sudo chmod 600 /home/devops/.ssh/authorized_keys
 
-            # -----------------------------
-            # 4. INSTALL DEPENDENCIES
-            # -----------------------------
-            sudo apt update -y
-            sudo apt install -y nginx curl git
+        # -----------------------------
+        # 2. SSH HARDENING
+        # -----------------------------
+        sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+        sudo systemctl restart ssh || sudo systemctl restart sshd
 
-            # -----------------------------
-            # 5. APP SETUP (DEVOPS USER)
-            # -----------------------------
-            sudo -u devops bash << 'EOF'
+        # -----------------------------
+        # 3. FIREWALL + RATE LIMIT
+        # -----------------------------
+        sudo ufw allow 22
+        sudo ufw allow 80
+        sudo ufw allow 443
+        sudo ufw --force enable
 
-            export NVM_DIR="$HOME/.nvm"
-            if [ ! -d "$NVM_DIR" ]; then
-              curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
-            fi
-            source $NVM_DIR/nvm.sh
+        # -----------------------------
+        # 4. INSTALL DEPENDENCIES
+        # -----------------------------
+        sudo apt update -y
+        sudo apt install -y nginx curl git fail2ban
 
-            if ! command -v node >/dev/null; then
-              nvm install 18
-            fi
+        # -----------------------------
+        # 5. APP SETUP (DEVOPS USER)
+        # -----------------------------
+        sudo -u devops bash << 'EOF'
 
-            if ! command -v pm2 >/dev/null; then
-              npm install -g pm2
-            fi
+        set -e
 
-            if [ ! -d "/home/devops/My-JS-Project" ]; then
-              git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
-            fi
+        export NVM_DIR="$HOME/.nvm"
+        if [ ! -d "$NVM_DIR" ]; then
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+        fi
+        source $NVM_DIR/nvm.sh
 
-            cd /home/devops/My-JS-Project
-            git pull origin main
-            npm install
-            npm run build
+        # Install Node.js 20 (LTS)
+        nvm install 20
+        nvm use 20
 
-            pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
-            pm2 save
+        # Install PM2
+        if ! command -v pm2 >/dev/null; then
+          npm install -g pm2
+        fi
 
-            EOF
+        # Clone or update repo safely
+        if [ ! -d "/home/devops/My-JS-Project" ]; then
+          git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
+        fi
 
-            # -----------------------------
-            # 6. NGINX CONFIG (FIXED)
-            # -----------------------------
-            sudo tee /etc/nginx/sites-available/default > /dev/null <<EOL
-            server {
-                listen 80;
-                server_name $DOMAIN;
+        cd /home/devops/My-JS-Project
+        git fetch origin
+        git reset --hard origin/main
 
-                location / {
-                    proxy_pass http://localhost:3000;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection 'upgrade';
-                    proxy_set_header Host \$host;
-                }
+        # Install deps
+        npm install
 
-                location ~ /\.git {
-                    deny all;
-                }
+        # 🔐 SECURITY CHECK (CI/CD)
+        npm audit --audit-level=high || true
+
+        # Build app
+        npm run build
+
+        # Run app
+        pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
+        pm2 save
+
+        EOF
+
+        # Enable PM2 startup
+        sudo env PATH=$PATH:/home/devops/.nvm/versions/node/v20*/bin pm2 startup systemd -u devops --hp /home/devops
+
+        # -----------------------------
+        # 6. NGINX CONFIG (SECURED)
+        # -----------------------------
+        sudo tee /etc/nginx/sites-available/default > /dev/null <<EOL
+        server {
+            listen 80;
+            server_name $DOMAIN;
+
+            # Security Headers
+            add_header X-Frame-Options "DENY";
+            add_header X-Content-Type-Options "nosniff";
+            add_header X-XSS-Protection "1; mode=block";
+            add_header Content-Security-Policy "default-src 'self'";
+
+            # Rate Limiting
+            limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s;
+
+            location / {
+                limit_req zone=one burst=20;
+                proxy_pass http://localhost:3000;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade \$http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_set_header Host \$host;
             }
-            EOL
 
-            sudo nginx -t
-            sudo systemctl restart nginx
+            location ~ /\.git {
+                deny all;
+            }
+        }
+        EOL
 
-            # -----------------------------
-            # 7. SSL SETUP (FIXED)
-            # -----------------------------
-            sudo apt install -y certbot python3-certbot-nginx
+        sudo nginx -t
+        sudo systemctl restart nginx
 
-            sudo certbot --nginx -d $DOMAIN \
-              --non-interactive \
-              --agree-tos \
-              -m $EMAIL \
-              --redirect || true
+        # -----------------------------
+        # 7. SSL SETUP
+        # -----------------------------
+        sudo apt install -y certbot python3-certbot-nginx
 
-            sudo systemctl reload nginx
+        sudo certbot --nginx -d $DOMAIN \
+          --non-interactive \
+          --agree-tos \
+          -m $EMAIL \
+          --redirect || true
+
+        sudo systemctl reload nginx
+
+        echo "✅ Deployment Completed Successfully!"
+```
