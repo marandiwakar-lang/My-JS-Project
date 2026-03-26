@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to Server via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_IP }}
@@ -22,9 +22,7 @@ jobs:
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
 
-            # -----------------------------
-            # 1. CREATE DEVOPS USER
-            # -----------------------------
+            # Create user
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
@@ -36,31 +34,23 @@ jobs:
             sudo chmod 700 /home/devops/.ssh
             sudo chmod 600 /home/devops/.ssh/authorized_keys || true
 
-            # -----------------------------
-            # 2. SSH HARDENING
-            # -----------------------------
+            # SSH hardening
             sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
             sudo systemctl restart ssh || sudo systemctl restart sshd
 
-            # -----------------------------
-            # 3. FIREWALL
-            # -----------------------------
+            # Firewall
             sudo ufw allow 22
             sudo ufw allow 80
             sudo ufw allow 443
             sudo ufw --force enable
 
-            # -----------------------------
-            # 4. INSTALL DEPENDENCIES
-            # -----------------------------
+            # Install packages
             sudo apt update -y
             sudo apt install -y nginx curl git
 
-            # -----------------------------
-            # 5. APP SETUP
-            # -----------------------------
-            sudo -u devops bash << 'EOF'
+            # App setup as devops user
+            sudo -u devops bash << 'APPEOF'
             set -e
 
             export NVM_DIR="$HOME/.nvm"
@@ -69,7 +59,7 @@ jobs:
               curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
             fi
 
-            source $NVM_DIR/nvm.sh
+            source "$NVM_DIR/nvm.sh"
 
             nvm install 20
             nvm use 20
@@ -83,6 +73,7 @@ jobs:
             fi
 
             cd /home/devops/My-JS-Project
+
             git fetch origin
             git reset --hard origin/main
 
@@ -94,18 +85,14 @@ jobs:
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
 
-            EOF
+            pm2 startup systemd -u devops --hp /home/devops
+            APPEOF
 
-            # Enable PM2 startup
-            sudo env PATH=$PATH:/home/devops/.nvm/versions/node/v20*/bin pm2 startup systemd -u devops --hp /home/devops
-
-            # -----------------------------
-            # 6. NGINX CONFIG
-            # -----------------------------
-            sudo tee /etc/nginx/sites-available/default > /dev/null <<EOL
+            # Nginx config
+            sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
-                server_name $DOMAIN;
+                server_name ${DOMAIN};
 
                 location / {
                     proxy_pass http://localhost:3000;
@@ -119,22 +106,20 @@ jobs:
                     deny all;
                 }
             }
-            EOL
+            NGINXEOF
 
             sudo nginx -t
             sudo systemctl restart nginx
 
-            # -----------------------------
-            # 7. SSL SETUP
-            # -----------------------------
+            # SSL
             sudo apt install -y certbot python3-certbot-nginx
 
-            sudo certbot --nginx -d $DOMAIN \
+            sudo certbot --nginx -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
-              -m $EMAIL \
+              -m "$EMAIL" \
               --redirect || true
 
             sudo systemctl reload nginx
 
-            echo "✅ Deployment Completed Successfully"
+            echo "Deployment completed successfully"
