@@ -77,8 +77,7 @@ jobs:
             git fetch origin
             git reset --hard origin/main
 
-            rm -rf node_modules package-lock.json
-            npm install --legacy-peer-deps
+            npm install 
             npm audit --audit-level=high || true
 
             npm run build
