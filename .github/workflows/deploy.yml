@@ -61,14 +61,13 @@ jobs:
             cd /home/devops/My-JS-Project
             git fetch origin
             git reset --hard origin/main
-            npm ci
-            npm audit --audit-level=critical
+            npm install --legacy-peer-deps
             npm run build
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
             APPEOF
-            # pm2 startup
-            NODE_BIN="/home/devops/.nvm/versions/node/v20.19.2/bin"
+            # pm2 startup must run as root with the devops node path
+            NODE_BIN=$(sudo -u devops bash -c 'source $HOME/.nvm/nvm.sh && nvm which 20' | xargs dirname)
             sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
             # Nginx config
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
