@@ -1,11 +1,14 @@
 name: Full Deployment
+
 on:
   push:
     branches:
       - main
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -15,6 +18,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
+
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
 
@@ -23,6 +27,7 @@ jobs:
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
+
             sudo mkdir -p /home/devops/.ssh
             sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
             sudo chown -R devops:devops /home/devops/.ssh
@@ -44,41 +49,39 @@ jobs:
             sudo apt update -y
             sudo apt install -y nginx curl git
 
-            # -------------------------------------------------------
-            # Create security headers snippet BEFORE Nginx config
-            # This file survives Certbot rewrites because it is included
-            # -------------------------------------------------------
-            sudo mkdir -p /etc/nginx/snippets
-            sudo tee /etc/nginx/snippets/security-headers.conf > /dev/null << 'SECEOF'
-            add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; connect-src 'self';" always;
-            add_header X-Frame-Options "DENY" always;
-            add_header X-Content-Type-Options "nosniff" always;
-            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-            add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
-            SECEOF
-
             # App setup as devops user
             sudo -u devops bash << 'APPEOF'
             set -e
+
             export NVM_DIR="$HOME/.nvm"
+
             if [ ! -d "$NVM_DIR" ]; then
               curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
             fi
+
             source "$NVM_DIR/nvm.sh"
+
             nvm install 20
             nvm use 20
+
             if ! command -v pm2 >/dev/null; then
               npm install -g pm2
             fi
+
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
             fi
+
             cd /home/devops/My-JS-Project
+
             git fetch origin
             git reset --hard origin/main
+
             npm install
             npm audit --audit-level=high || true
+
             npm run build
+
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
             APPEOF
@@ -87,14 +90,11 @@ jobs:
             NODE_BIN="/home/devops/.nvm/versions/node/v20.20.2/bin"
             sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
 
-            # Nginx config - includes security headers snippet
+            # Nginx config
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
                 server_name ${DOMAIN};
-
-                # Include security headers (survives Certbot rewrites)
-                include snippets/security-headers.conf;
 
                 location / {
                     proxy_pass http://localhost:3000;
@@ -113,24 +113,16 @@ jobs:
             sudo nginx -t
             sudo systemctl restart nginx
 
-            # SSL - Certbot will add the HTTPS block but our snippet include stays
+            # SSL
             sudo apt install -y certbot python3-certbot-nginx
+
             sudo certbot --nginx -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
               -m "$EMAIL" \
               --redirect || true
 
-            # Re-add snippet include to HTTPS block if Certbot removed it
-            if ! sudo grep -q "security-headers.conf" /etc/nginx/sites-available/default; then
-              sudo sed -i '/listen 443/a\    include snippets/security-headers.conf;' /etc/nginx/sites-available/default
-            fi
-
-            sudo nginx -t
             sudo systemctl reload nginx
 
-            # Verify headers are present
-            echo "--- Verifying security headers ---"
-            curl -sk -o /dev/null -D - https://${DOMAIN}/robots.txt | grep -i "content-security-policy\|x-frame-options\|x-content-type" || echo "WARNING: Headers not detected, check nginx config"
-
             echo "Deployment completed successfully"
+
