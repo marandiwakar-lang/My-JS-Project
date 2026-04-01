@@ -750,22 +750,10 @@ The application is running a vulnerable version of Next.js that uses React Serve
 
 #### Proof of Concept
 
-Attack Payload:
-
-```
-["$1:a"]
-```
-
 Test using curl:
 
 ```
 curl "https://myjavascriptapp.duckdns.org/?email=test@example.com&message=test"
-```
-
-Observed Evidence:
-
-```
-E{"digest"}
 ```
 
 The response confirms that the server processes malformed RSC input, indicating a possible execution path vulnerability.
@@ -778,30 +766,20 @@ The response confirms that the server processes malformed RSC input, indicating 
 npm install next@latest react@latest react-dom@latest
 ```
 
-**2 — Disable vulnerable experimental features:**
+**2 —Upgrade dependencies in package.json file:**
 
 ```
-// next.config.js
-module.exports = {
-  experimental: {
-    serverActions: false,
-  },
-};
+"next": "15.1.0" into "next": "15.1.9",
+"react": "^18.2.0" into "react": "19.0.1",
+"react-dom": "^18.2.0" into "react-dom": "19.0.1",
 ```
-**3 — Add input validation:**
+**3 —Upgrade deploy.yml file:**
+```
+npm install --legacy-peer-deps
 
-```
-if (!email.includes("@")) {
-  return res.status(400).json({ error: "Invalid input" });
-}
+- npm install regenerates the lockfile automatically to match the new package.json. The --legacy-peer-deps flag is needed because react-day-picker@8.10.1 in our project still declares a peer dependency on React 18, but we are now on React 19. This flag tells npm to ignore that mismatch and install anyway — Next.js 15 handles this fine at runtime.
 ```
 
-**4 — Implement rate limiting / WAF:**
-
-```
-// Example: Upstash rate limiting
-import { Ratelimit } from "@upstash/ratelimit";
-```
 
 **Conclusion:**
 
