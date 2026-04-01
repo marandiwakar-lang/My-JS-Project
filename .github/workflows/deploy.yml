@@ -77,8 +77,8 @@ jobs:
             git fetch origin
             git reset --hard origin/main
 
-            npm install next@latest react@latest react-dom@latest
-            npm install
+            rm -rf node_modules package-lock.json
+            npm install --legacy-peer-deps
             npm audit --audit-level=high || true
 
             npm run build
