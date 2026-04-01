@@ -169,8 +169,8 @@ sudo systemctl status nginx
 
 ```bash
 # Clone your repository
-git clone <repo-url>
-cd <project-directory>
+git clone https://github.com/marandiwakar-lang/js-webapp.git
+cd js-webapp
 
 # Install production dependencies
 npm install
