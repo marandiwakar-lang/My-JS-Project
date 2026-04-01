@@ -63,7 +63,7 @@ su - devops
 ### 3.1 Edit SSH Daemon Configuration
 
 ```bash
-sudo nano /etc/ssh/sshd_config
+sudo vi /etc/ssh/sshd_config
 ```
 
 Apply the following changes:
@@ -217,7 +217,7 @@ curl http://localhost:3000
 ### 7.1 Edit the Nginx Server Block
 
 ```bash
-sudo nano /etc/nginx/sites-available/default
+sudo vi /etc/nginx/sites-available/default
 ```
 
 Replace the file contents with the following configuration:
@@ -283,7 +283,7 @@ Provision a free TLS certificate via Let's Encrypt using Certbot:
 sudo apt install certbot python3-certbot-nginx -y
 
 # Obtain and install the certificate
-sudo certbot --nginx -d myjsapp.com -d www.myjsapp.com
+sudo certbot --nginx -d myjavascriptapp.duckdns.org
 ```
 
 Certbot will:
@@ -306,11 +306,11 @@ Run the following checks to confirm the deployment is healthy:
 
 ```bash
 # 1. Confirm HTTPS is accessible
-curl -I https://myjsapp.com
+curl -I https://myjavascriptapp.duckdns.org 
 # Expected: HTTP/2 200
 
 # 2. Confirm .git directory is blocked
-curl -I https://myjsapp.com/.git/config
+curl -I https://myjavascriptapp.duckdns.org /.git/config
 # Expected: HTTP/2 404
 
 # 3. Check PM2 process status
