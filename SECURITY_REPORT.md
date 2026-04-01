@@ -779,7 +779,186 @@ npm install --legacy-peer-deps
 
 - npm install regenerates the lockfile automatically to match the new package.json. The --legacy-peer-deps flag is needed because react-day-picker@8.10.1 in our project still declares a peer dependency on React 18, but we are now on React 19. This flag tells npm to ignore that mismatch and install anyway — Next.js 15 handles this fine at runtime.
 ```
+### V-008: Content Security Policy (CSP) Missing Fallback Directive
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟠 Medium                                        |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | `next.config.js` (security headers section)      |
+| **Affected Line**  | Missing `headers()` configuration                |
+
+#### Description
+
+The application’s Content Security Policy does not define fallback directives such as worker-src, manifest-src, and media-src. Without fallback rules, browsers may allow unintended resource loading.
+
+#### Business Impact
+
+Attackers may load malicious resources, increasing risk of XSS or data exfiltration.
+
+#### Proof of Concept:
+
+```
+ curl -I https://myjavascriptapp.duckdns.org
+```
+
+ #### Recommended Fix:
+
+```
+ Content-Security-Policy: worker-src 'none'; manifest-src 'self'; media-src 'none';
+```
+### V-009: CSP Wildcard Directive Usage
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟠 Medium                                        |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | `next.config.js`                                 |
+
+#### Description
+
+Use of wildcard (*) in CSP allows resources from any domain.
+
+#### Business Impact
+
+Malicious external scripts can be loaded.
+
+#### Proof of Concept:
+
+```
+ curl -I https://myjavascriptapp.duckdns.org | grep Content-Security-Policy
+```
+
+ #### Recommended Fix:
+
+```
+ Remove all wildcard sources and define explicit domains.
+```
+
+### V-010: X-Powered-By Header Disclosure
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟡 low                                          |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | `next.config.js`                                  |
+
+#### Description
+
+Server exposes technology stack via headers.
+
+#### Business Impact
+
+Helps attackers fingerprint the system.
+
+#### Proof of Concept:
+
+```
+ curl -I https://myjavascriptapp.duckdns.org 
+```
+
+ #### Recommended Fix:
+
+TypeScript
+```
+ poweredByHeader: false
+```
+
+### V-011: Information Disclosure via URL
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟡 low                                          |
+| **OWASP Category** | A02:2021 — Cryptographic Failures                |
+| **Affected File**  | Query parameters                                 |
+
+#### Description
+
+Sensitive data passed via URL parameters.
+
+#### Business Impact
+
+Data leakage via logs, browser history.
+
+#### Proof of Concept:
+
+```
+https://example.com?email=test@example.com
+```
+
+ #### Recommended Fix:
+
+```
+ Use POST body instead of query parameters.
+```
+
+### V-012: Cache-Control Misconfiguration
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🟡 low                                          |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | `next.config.js`                                  |
+
+#### Description
+
+Improper caching of sensitive responses.
+
+#### Business Impact
+
+Sensitive data exposure via cache.
+
+#### Proof of Concept:
+
+```
+curl -I https://myjavascriptapp.duckdns.org/api
+```
+
+ #### Recommended Fix:
+
+```
+Cache-Control: no-store
+```
+
+### V-013: Modern Web Application Detected
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🔵 Informational                                |
+| **OWASP Category** | Informational                                    |
+| **Affected File**  | N/A                                              |
+
+#### Description
+
+Application identified as Next.js.
+
+#### Business Impact
+
+No direct risk.
+
+#### Proof of Concept:
+
+```
+ZAP fingerprinting.
+```
+
+ #### Recommended Fix:
+
+```
+No action required.
+```
+
+ #### Recommended Fix:
+
+```
+No action required.
+```
 
 **Conclusion:**
 
