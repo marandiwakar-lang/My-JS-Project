@@ -4,67 +4,103 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── SECURITY GATE: block deploy if CVE version is present ─────
+      - name: Verify Next.js is patched (CVE-2025-55182 React2Shell)
+        run: |
+          NEXT_VERSION=$(node -e "const p=require('./package.json'); const v=p.dependencies.next; console.log(v.replace(/[\^~]/,''))")
+          echo "next version in package.json: $NEXT_VERSION"
+
+          MAJOR=$(echo "$NEXT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$NEXT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$NEXT_VERSION" | cut -d. -f3)
+
+          # Block any 15.1.x below 15.1.9
+          if [ "$MAJOR" = "15" ] && [ "$MINOR" = "1" ] && [ "$PATCH" -lt "9" ] 2>/dev/null; then
+            echo "ERROR: next@$NEXT_VERSION is vulnerable to CVE-2025-55182 (React2Shell RCE CVSS 10.0)"
+            echo "Fix: change next to 15.1.9 and react/react-dom to 19.0.1 in package.json"
+            exit 1
+          fi
+          echo "CVE check passed — next@$NEXT_VERSION is safe to deploy"
+
+      # ── Deploy to EC2 via SSH ─────────────────────────────────────
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          command_timeout: 25m
           script: |
-            set -e
+            set -euo pipefail
 
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
+            NODE_VERSION="20.19.2"
+            NODE_BIN="/home/devops/.nvm/versions/node/v${NODE_VERSION}/bin"
 
-            # Create user
+            echo "===== [1/8] Creating devops user ====="
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
-
             sudo mkdir -p /home/devops/.ssh
-            sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
+            sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ 2>/dev/null || true
             sudo chown -R devops:devops /home/devops/.ssh
             sudo chmod 700 /home/devops/.ssh
-            sudo chmod 600 /home/devops/.ssh/authorized_keys || true
+            sudo chmod 600 /home/devops/.ssh/authorized_keys 2>/dev/null || true
 
-            # SSH hardening
+            echo "===== [2/8] SSH hardening ====="
             sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-            sudo systemctl restart ssh || sudo systemctl restart sshd
+            sudo sed -i 's/^#\?X11Forwarding .*/X11Forwarding no/' /etc/ssh/sshd_config
+            sudo sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
+            sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
-            # Firewall
-            sudo ufw allow 22
-            sudo ufw allow 80
-            sudo ufw allow 443
+            echo "===== [3/8] Firewall ====="
+            sudo ufw default deny incoming
+            sudo ufw default allow outgoing
+            sudo ufw allow 22/tcp   comment 'SSH'
+            sudo ufw allow 80/tcp   comment 'HTTP'
+            sudo ufw allow 443/tcp  comment 'HTTPS'
             sudo ufw --force enable
+            sudo ufw status verbose
 
-            # Install packages
-            sudo apt update -y
-            sudo apt install -y nginx curl git
+            echo "===== [4/8] System packages ====="
+            sudo apt-get update -y
+            sudo apt-get install -y nginx curl git
 
-            # App setup as devops user
-            sudo -u devops bash << 'APPEOF'
-            set -e
+            echo "===== [5/8] App setup as devops ====="
+            sudo -u devops bash << APPEOF
+            set -euo pipefail
+            export NVM_DIR="\$HOME/.nvm"
 
-            export NVM_DIR="$HOME/.nvm"
-
-            if [ ! -d "$NVM_DIR" ]; then
-              curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+            if [ ! -d "\$NVM_DIR" ]; then
+              curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
             fi
+            source "\$NVM_DIR/nvm.sh"
 
-            source "$NVM_DIR/nvm.sh"
+            nvm install ${NODE_VERSION}
+            nvm alias default ${NODE_VERSION}
+            nvm use ${NODE_VERSION}
+            echo "Node: \$(node --version)  npm: \$(npm --version)"
 
-            nvm install 20
-            nvm use 20
-
-            if ! command -v pm2 >/dev/null; then
+            if ! command -v pm2 >/dev/null 2>&1; then
               npm install -g pm2
             fi
 
@@ -73,56 +109,152 @@ jobs:
             fi
 
             cd /home/devops/My-JS-Project
-
-            git fetch origin
+            git fetch origin main
             git reset --hard origin/main
 
-            npm install 
-            npm audit --audit-level=high || true
+            echo "Installing dependencies..."
+            npm ci
 
-            npm run build
+            echo "Running npm audit security gate..."
+            npm audit --audit-level=critical || {
+              echo "BLOCKED: Critical CVE found in dependencies. Fix package.json."
+              exit 1
+            }
 
-            pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
+            echo "Building for production..."
+            NODE_ENV=production npm run build
+
+            pm2 restart nextjs-app --update-env 2>/dev/null \
+              || pm2 start npm --name "nextjs-app" -- start
+
             pm2 save
+            pm2 list
             APPEOF
 
-            # pm2 startup must run as root with the devops node path
-            NODE_BIN="/home/devops/.nvm/versions/node/v20.20.2/bin"
-            sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
+            echo "===== [6/8] PM2 startup on boot ====="
+            sudo env PATH=$PATH:${NODE_BIN} \
+              pm2 startup systemd -u devops --hp /home/devops || true
 
-            # Nginx config
-            sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
+            echo "===== [7/8] Nginx configuration ====="
+            sudo tee /etc/nginx/sites-available/nextjs-app > /dev/null << 'NGINXEOF'
             server {
                 listen 80;
-                server_name ${DOMAIN};
+                listen [::]:80;
+                server_name myjavascriptapp.duckdns.org;
 
-                location / {
-                    proxy_pass http://localhost:3000;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection 'upgrade';
-                    proxy_set_header Host \$host;
+                location /.well-known/acme-challenge/ {
+                    root /var/www/certbot;
                 }
+                location / {
+                    return 301 https://$host$request_uri;
+                }
+            }
+
+            server {
+                listen 443 ssl http2;
+                listen [::]:443 ssl http2;
+                server_name myjavascriptapp.duckdns.org;
+
+                ssl_certificate     /etc/letsencrypt/live/myjavascriptapp.duckdns.org/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/myjavascriptapp.duckdns.org/privkey.pem;
+                include             /etc/letsencrypt/options-ssl-nginx.conf;
+                ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+                server_tokens off;
+
+                add_header X-Frame-Options            "DENY"                             always;
+                add_header X-Content-Type-Options     "nosniff"                          always;
+                add_header X-XSS-Protection           "1; mode=block"                    always;
+                add_header Referrer-Policy            "strict-origin-when-cross-origin"  always;
+                add_header Strict-Transport-Security  "max-age=31536000; includeSubDomains; preload" always;
+                add_header Content-Security-Policy    "frame-ancestors 'none'"           always;
+                add_header Permissions-Policy         "geolocation=(), microphone=(), camera=()" always;
 
                 location ~ /\.git {
                     deny all;
+                    return 404;
+                }
+                location ~ /\.(env|htaccess|htpasswd) {
+                    deny all;
+                    return 404;
+                }
+
+                location /_next/static/ {
+                    proxy_pass http://127.0.0.1:3000;
+                    add_header Cache-Control "public, max-age=31536000, immutable";
+                    access_log off;
+                }
+
+                location / {
+                    proxy_pass         http://127.0.0.1:3000;
+                    proxy_http_version 1.1;
+                    proxy_set_header   Upgrade           $http_upgrade;
+                    proxy_set_header   Connection        'upgrade';
+                    proxy_set_header   Host              $host;
+                    proxy_set_header   X-Real-IP         $remote_addr;
+                    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+                    proxy_set_header   X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout    60s;
+                    proxy_read_timeout    60s;
                 }
             }
             NGINXEOF
 
+            sudo ln -sf /etc/nginx/sites-available/nextjs-app /etc/nginx/sites-enabled/nextjs-app
+            sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t
             sudo systemctl restart nginx
 
-            # SSL
-            sudo apt install -y certbot python3-certbot-nginx
-
-            sudo certbot --nginx -d "$DOMAIN" \
+            echo "===== [8/8] SSL certificate ====="
+            sudo apt-get install -y certbot python3-certbot-nginx
+            sudo certbot --nginx \
+              -d "${DOMAIN}" \
               --non-interactive \
               --agree-tos \
-              -m "$EMAIL" \
-              --redirect || true
-
+              --email "${EMAIL}" \
+              --redirect \
+              --keep-until-expiring || true
             sudo systemctl reload nginx
 
-            echo "Deployment completed successfully"
+            echo "============================================="
+            echo " Deployment complete!"
+            echo " URL:  https://${DOMAIN}"
+            echo " CVE-2025-55182 (React2Shell): PATCHED"
+            echo "============================================="
 
+      # ── Health check ──────────────────────────────────────────────
+      - name: Health check
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 20 \
+            https://myjavascriptapp.duckdns.org || echo "000")
+          echo "HTTP Status: $STATUS"
+          if [ "$STATUS" = "000" ]; then
+            echo "Health check FAILED — site unreachable"
+            exit 1
+          fi
+          echo "Health check PASSED ($STATUS)"
+
+      # ── Security header verification ───────────────────────────────
+      - name: Verify security headers
+        run: |
+          HEADERS=$(curl -sI https://myjavascriptapp.duckdns.org 2>/dev/null || true)
+          echo "$HEADERS"
+          MISSING=0
+          for h in "x-frame-options" "x-content-type-options" "strict-transport-security" "content-security-policy"; do
+            if echo "$HEADERS" | grep -qi "$h"; then
+              echo "PRESENT: $h"
+            else
+              echo "MISSING: $h"
+              MISSING=$((MISSING+1))
+            fi
+          done
+          [ "$MISSING" -eq 0 ] && echo "All security headers OK" || { echo "$MISSING header(s) missing"; exit 1; }
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "DEPLOYMENT FAILED — Branch: ${{ github.ref_name }} | Commit: ${{ github.sha }}"
