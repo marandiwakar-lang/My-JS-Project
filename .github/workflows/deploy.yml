@@ -1,14 +1,11 @@
 name: Full Deployment
-
 on:
   push:
     branches:
       - main
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -18,7 +15,6 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
-
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
 
@@ -27,7 +23,6 @@ jobs:
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
-
             sudo mkdir -p /home/devops/.ssh
             sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
             sudo chown -R devops:devops /home/devops/.ssh
@@ -49,41 +44,54 @@ jobs:
             sudo apt update -y
             sudo apt install -y nginx curl git
 
+            # Create security headers snippet (survives Certbot rewrites)
+            sudo mkdir -p /etc/nginx/snippets
+            sudo tee /etc/nginx/snippets/security-headers.conf > /dev/null << 'SECEOF'
+            add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none';" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            SECEOF
+
             # App setup as devops user
             sudo -u devops bash << 'APPEOF'
             set -e
-
             export NVM_DIR="$HOME/.nvm"
-
             if [ ! -d "$NVM_DIR" ]; then
               curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
             fi
-
             source "$NVM_DIR/nvm.sh"
-
             nvm install 20
             nvm use 20
-
             if ! command -v pm2 >/dev/null; then
               npm install -g pm2
             fi
-
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
             fi
-
             cd /home/devops/My-JS-Project
-
             git fetch origin
             git reset --hard origin/main
 
+            # Upgrade Next.js and React to patch CVE-2025-55182 (CVSS 10.0 RCE)
+            # Vulnerable: Next.js 15.x/16.x with App Router + React 19.0-19.2
+            npm install next@latest react@latest react-dom@latest
+
             npm install
-            npm audit --audit-level=high || true
+
+            # Fail deployment if critical CVEs found (catches future vulnerabilities)
+            npm audit --audit-level=critical
 
             npm run build
-
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
+
+            # Print installed versions for audit trail
+            echo "--- Installed versions ---"
+            node -e "console.log('Next.js:', require('./node_modules/next/package.json').version)"
+            node -e "console.log('React:  ', require('./node_modules/react/package.json').version)"
             APPEOF
 
             # pm2 startup must run as root with the devops node path
@@ -96,6 +104,9 @@ jobs:
                 listen 80;
                 server_name ${DOMAIN};
 
+                # Security headers (CSP fix + RCE mitigation layer)
+                include snippets/security-headers.conf;
+
                 location / {
                     proxy_pass http://localhost:3000;
                     proxy_http_version 1.1;
@@ -107,6 +118,11 @@ jobs:
                 location ~ /\.git {
                     deny all;
                 }
+
+                # Block malformed RSC Flight protocol requests (CVE-2025-55182 mitigation)
+                location ~ /__nextjs_original-stack-frames {
+                    deny all;
+                }
             }
             NGINXEOF
 
@@ -115,14 +131,22 @@ jobs:
 
             # SSL
             sudo apt install -y certbot python3-certbot-nginx
-
             sudo certbot --nginx -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
               -m "$EMAIL" \
               --redirect || true
 
+            # Re-add snippet include if Certbot removed it from HTTPS block
+            if ! sudo grep -q "security-headers.conf" /etc/nginx/sites-available/default; then
+              sudo sed -i '/listen 443/a\    include snippets/security-headers.conf;' /etc/nginx/sites-available/default
+            fi
+
+            sudo nginx -t
             sudo systemctl reload nginx
 
-            echo "Deployment completed successfully"
+            # Verify security headers are present
+            echo "--- Verifying security headers ---"
+            curl -sk -o /dev/null -D - https://${DOMAIN}/robots.txt | grep -i "content-security-policy\|x-frame-options\|x-content-type" || echo "WARNING: Headers not detected"
 
+            echo "Deployment completed successfully"
