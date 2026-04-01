@@ -1108,17 +1108,6 @@ cat /home/deployer/app/.env.production
 
 ---
 
-## 4. Risk Summary Matrix
-
-| ID    | Vulnerability                         | Severity  | OWASP   | Exploitability | Business Impact | Status     |
-|-------|---------------------------------------|-----------|---------|----------------|-----------------|------------|
-| V-001 | Missing rate limiting on /api/sendgrid | 🔴 Critical | A05    | Trivial        | High            | Open       |
-| V-002 | Email header injection                 | 🔴 High    | A03     | Easy           | High            | Open       |
-| V-003 | .git directory publicly exposed        | 🔴 High    | A05     | Easy           | Critical        | Open       |
-| V-004 | Missing security headers / clickjacking | 🟠 Medium  | A05    | Easy           | Medium          | Open       |
-| V-005 | Application running as root            | 🔴 Critical | A05    | N/A (amplifier) | Critical       | Open       |
-| V-006 | Missing input validation               | 🔴 High    | A03     | Easy           | Medium          | Open       |
-
 **Severity Scale:**
 - 🔴 Critical / High — immediate action required
 - 🟠 Medium — address within current sprint
