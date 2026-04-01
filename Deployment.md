@@ -85,13 +85,6 @@ Port 2222
 sudo systemctl restart ssh
 ```
 
-> ⚠️ **Important:** Open a second terminal session to verify SSH access on port `2222` **before** closing your current session. This prevents being locked out.
-
-```bash
-# Test from a new terminal window before closing existing session
-ssh -i key.pem -p 2222 devops@<EC2-IP>
-```
-
 ---
 
 ## 4. Firewall Configuration
@@ -147,6 +140,9 @@ npm --version
 ```
 
 ### 5.2 Install PM2 (Process Manager)
+
+PM2 is a production process manager for Node.js applications.
+Think of it like a supervisor that keeps your app running 24/7.
 
 ```bash
 npm install -g pm2
