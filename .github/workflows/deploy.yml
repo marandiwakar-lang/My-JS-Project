@@ -1,4 +1,4 @@
-name: Full DevOps Deployment
+name: Full Deployment
 
 on:
   push:
