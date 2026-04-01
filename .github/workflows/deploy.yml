@@ -1,11 +1,14 @@
 name: Full Deployment
+
 on:
   push:
     branches:
       - main
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -16,43 +19,38 @@ jobs:
           port: 22
           script: |
             set -e
+
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
             SSH_PORT=2222
 
-            # ── Create non-root devops user ──────────────────────────────────
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
+
             sudo mkdir -p /home/devops/.ssh
             sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
             sudo chown -R devops:devops /home/devops/.ssh
             sudo chmod 700 /home/devops/.ssh
             sudo chmod 600 /home/devops/.ssh/authorized_keys || true
 
-            # ── SSH hardening ────────────────────────────────────────────────
-            # Change default SSH port + disable password auth + disable root login
             sudo sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
             sudo systemctl restart ssh || sudo systemctl restart sshd
 
-            # ── Firewall ─────────────────────────────────────────────────────
-            # Allow new SSH port BEFORE enabling UFW (or you'll lock yourself out)
             sudo ufw default deny incoming
             sudo ufw default allow outgoing
-            sudo ufw allow ${SSH_PORT}/tcp   # new SSH port (not 22)
+            sudo ufw allow ${SSH_PORT}/tcp
             sudo ufw allow 80/tcp
             sudo ufw allow 443/tcp
             sudo ufw --force enable
 
-            # ── Install packages ─────────────────────────────────────────────
             sudo apt update -y
             sudo apt install -y nginx curl git
 
-            # ── App setup as devops user ─────────────────────────────────────
             sudo -u devops bash << 'APPEOF'
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -62,12 +60,15 @@ jobs:
             source "$NVM_DIR/nvm.sh"
             nvm install 20
             nvm use 20
+
             if ! command -v pm2 >/dev/null; then
               npm install -g pm2
             fi
+
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
             fi
+
             cd /home/devops/My-JS-Project
             git fetch origin
             git reset --hard origin/main
@@ -77,26 +78,18 @@ jobs:
             pm2 save
             APPEOF
 
-            # ── PM2 startup (run as root, point to devops node) ─────────────
             NODE_BIN=$(sudo -u devops bash -c 'source $HOME/.nvm/nvm.sh && nvm which 20' | xargs dirname)
             sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
 
-            # ── Nginx config ─────────────────────────────────────────────────
-            # IMPORTANT: Nginx sets NO security headers here.
-            # All security headers (CSP, HSTS, X-Frame-Options, etc.) are set
-            # exclusively in next.config.ts to avoid duplicate header conflicts
-            # which ZAP flags as "Strict-Transport-Security Multiple Header Entries".
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
                 server_name ${DOMAIN};
 
-                # Allow Let's Encrypt ACME challenge through
                 location /.well-known/acme-challenge/ {
                     root /var/www/certbot;
                 }
 
-                # Redirect all HTTP to HTTPS
                 location / {
                     return 301 https://\$host\$request_uri;
                 }
@@ -109,29 +102,18 @@ jobs:
                 ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
                 ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 
-                # Hide Nginx version from response headers
                 server_tokens off;
 
-                # ── Block access to sensitive files ──────────────────────────
-                # Prevent source code disclosure via .git directory
                 location ~ /\.git {
                     deny all;
                     return 404;
                 }
 
-                # Prevent environment variable disclosure
                 location ~ /\.env {
                     deny all;
                     return 404;
                 }
 
-                # ── Proxy to Next.js app ──────────────────────────────────────
-                # NOTE: Do NOT add any add_header directives here.
-                # next.config.ts handles ALL security headers centrally.
-                # Adding headers in both places causes duplicates that:
-                #   1. Break ZAP scans (Strict-Transport-Security Multiple Header Entries)
-                #   2. Can cause browser policy conflicts
-                #   3. Fail RFC 7230 compliance checks
                 location / {
                     proxy_pass http://localhost:3000;
                     proxy_http_version 1.1;
@@ -148,13 +130,13 @@ jobs:
             sudo nginx -t
             sudo systemctl restart nginx
 
-            # ── SSL via Let's Encrypt ─────────────────────────────────────────
             sudo apt install -y certbot python3-certbot-nginx
             sudo certbot --nginx -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
               -m "$EMAIL" \
               --redirect || true
+
             sudo systemctl reload nginx
 
             echo "Deployment completed successfully"
