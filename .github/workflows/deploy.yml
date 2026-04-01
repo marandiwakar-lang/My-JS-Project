@@ -77,7 +77,6 @@ jobs:
             git fetch origin
             git reset --hard origin/main
 
-            npm install next@latest react@latest react-dom@latest
             npm install
             npm audit --audit-level=high || true
 
