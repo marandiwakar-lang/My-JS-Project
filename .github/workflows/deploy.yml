@@ -12,45 +12,22 @@ jobs:
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
+
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+
           script: |
             set -e
 
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
 
-            # Create user
-            if ! id "devops" &>/dev/null; then
-              sudo adduser --disabled-password --gecos "" devops
-              sudo usermod -aG sudo devops
-            fi
-
-            sudo mkdir -p /home/devops/.ssh
-            sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
-            sudo chown -R devops:devops /home/devops/.ssh
-            sudo chmod 700 /home/devops/.ssh
-            sudo chmod 600 /home/devops/.ssh/authorized_keys || true
-
-            # SSH hardening
-            sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-            sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-            sudo systemctl restart ssh || sudo systemctl restart sshd
-
-            # Firewall
-            sudo ufw allow 22
-            sudo ufw allow 80
-            sudo ufw allow 443
-            sudo ufw --force enable
-
-            # Install packages
             sudo apt update -y
             sudo apt install -y nginx curl git
 
-            # App setup as devops user
-            sudo -u devops bash << 'APPEOF'
+            sudo -u devops bash << 'EOF'
             set -e
 
             export NVM_DIR="$HOME/.nvm"
@@ -64,9 +41,7 @@ jobs:
             nvm install 20
             nvm use 20
 
-            if ! command -v pm2 >/dev/null; then
-              npm install -g pm2
-            fi
+            npm install -g pm2
 
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
@@ -77,20 +52,19 @@ jobs:
             git fetch origin
             git reset --hard origin/main
 
-            npm install
-            npm audit --audit-level=high || true
+            # Clean install (secure)
+            rm -rf node_modules
+            npm ci --omit=dev
+
+            # Fix vulnerabilities
+            npm audit fix --force || true
 
             npm run build
 
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
-            APPEOF
+            EOF
 
-            # pm2 startup must run as root with the devops node path
-            NODE_BIN="/home/devops/.nvm/versions/node/v20.20.2/bin"
-            sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
-
-            # Nginx config
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
@@ -98,9 +72,6 @@ jobs:
 
                 location / {
                     proxy_pass http://localhost:3000;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection 'upgrade';
                     proxy_set_header Host \$host;
                 }
 
@@ -113,7 +84,6 @@ jobs:
             sudo nginx -t
             sudo systemctl restart nginx
 
-            # SSL
             sudo apt install -y certbot python3-certbot-nginx
 
             sudo certbot --nginx -d "$DOMAIN" \
@@ -125,4 +95,3 @@ jobs:
             sudo systemctl reload nginx
 
             echo "Deployment completed successfully"
-
