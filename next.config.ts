@@ -26,7 +26,7 @@ const securityHeaders = [
   // ZAP alert: "CSP: style-src unsafe-inline"
   //   Status: REQUIRED by Tailwind CSS and CSS-in-JS at runtime.
   //           Cannot be removed without breaking all styles.
-  //           Documented trade-off — noted in security report.
+  //           Documented trade-off — noted in security report
   {
     key: 'Content-Security-Policy',
     value: [
