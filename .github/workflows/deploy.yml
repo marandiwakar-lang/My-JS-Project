@@ -1,14 +1,11 @@
 name: Full Deployment
-
 on:
   push:
     branches:
       - main
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -16,41 +13,36 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
           script: |
             set -e
-
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
-            SSH_PORT=2222
-
+            # Create user
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
             fi
-
             sudo mkdir -p /home/devops/.ssh
             sudo cp ~/.ssh/authorized_keys /home/devops/.ssh/ || true
             sudo chown -R devops:devops /home/devops/.ssh
             sudo chmod 700 /home/devops/.ssh
             sudo chmod 600 /home/devops/.ssh/authorized_keys || true
-
-            sudo sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" /etc/ssh/sshd_config
+            # SSH hardening
             sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
             sudo systemctl restart ssh || sudo systemctl restart sshd
-
+            # Firewall
             sudo ufw default deny incoming
             sudo ufw default allow outgoing
-            sudo ufw allow ${SSH_PORT}/tcp
-            sudo ufw allow 80/tcp
-            sudo ufw allow 443/tcp
+            sudo ufw allow 22
+            sudo ufw allow 80
+            sudo ufw allow 443
             sudo ufw --force enable
-
+            # Install packages
             sudo apt update -y
             sudo apt install -y nginx curl git
-
+            # App setup as devops user
             sudo -u devops bash << 'APPEOF'
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -60,15 +52,12 @@ jobs:
             source "$NVM_DIR/nvm.sh"
             nvm install 20
             nvm use 20
-
             if ! command -v pm2 >/dev/null; then
               npm install -g pm2
             fi
-
             if [ ! -d "/home/devops/My-JS-Project" ]; then
               git clone https://github.com/marandiwakar-lang/My-JS-Project.git /home/devops/My-JS-Project
             fi
-
             cd /home/devops/My-JS-Project
             git fetch origin
             git reset --hard origin/main
@@ -77,43 +66,39 @@ jobs:
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
             APPEOF
-
+            # pm2 startup must run as root with the devops node path
             NODE_BIN=$(sudo -u devops bash -c 'source $HOME/.nvm/nvm.sh && nvm which 20' | xargs dirname)
             sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
-
+            # Nginx config
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
                 server_name ${DOMAIN};
-
                 location /.well-known/acme-challenge/ {
                     root /var/www/certbot;
                 }
-
                 location / {
                     return 301 https://\$host\$request_uri;
                 }
             }
-
             server {
                 listen 443 ssl;
                 server_name ${DOMAIN};
-
                 ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
                 ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-
                 server_tokens off;
-
+                add_header X-Frame-Options "DENY" always;
+                add_header X-Content-Type-Options "nosniff" always;
+                add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+                add_header Content-Security-Policy "frame-ancestors 'none'" always;
                 location ~ /\.git {
                     deny all;
                     return 404;
                 }
-
                 location ~ /\.env {
                     deny all;
                     return 404;
                 }
-
                 location / {
                     proxy_pass http://localhost:3000;
                     proxy_http_version 1.1;
@@ -121,22 +106,18 @@ jobs:
                     proxy_set_header Connection 'upgrade';
                     proxy_set_header Host \$host;
                     proxy_set_header X-Real-IP \$remote_addr;
-                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
                     proxy_set_header X-Forwarded-Proto \$scheme;
                 }
             }
             NGINXEOF
-
             sudo nginx -t
             sudo systemctl restart nginx
-
+            # SSL
             sudo apt install -y certbot python3-certbot-nginx
             sudo certbot --nginx -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
               -m "$EMAIL" \
               --redirect || true
-
             sudo systemctl reload nginx
-
             echo "Deployment completed successfully"
