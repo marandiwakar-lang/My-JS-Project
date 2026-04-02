@@ -17,7 +17,8 @@ jobs:
             set -e
             DOMAIN="myjavascriptapp.duckdns.org"
             EMAIL="marandiwakar@gmail.com"
-            # Create user
+
+            # ── Create devops user ────────────────────────────────────────────
             if ! id "devops" &>/dev/null; then
               sudo adduser --disabled-password --gecos "" devops
               sudo usermod -aG sudo devops
@@ -27,22 +28,26 @@ jobs:
             sudo chown -R devops:devops /home/devops/.ssh
             sudo chmod 700 /home/devops/.ssh
             sudo chmod 600 /home/devops/.ssh/authorized_keys || true
-            # SSH hardening
+
+            # ── SSH hardening ─────────────────────────────────────────────────
             sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
             sudo sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
             sudo systemctl restart ssh || sudo systemctl restart sshd
-            # Firewall
+
+            # ── Firewall ──────────────────────────────────────────────────────
             sudo ufw default deny incoming
             sudo ufw default allow outgoing
             sudo ufw allow 22
             sudo ufw allow 80
             sudo ufw allow 443
             sudo ufw --force enable
-            # Install packages
-            sudo apt update -y
-            sudo apt install -y nginx curl git
-            # App setup as devops user
+
+            # ── Install packages ──────────────────────────────────────────────
+            sudo apt-get update -y
+            sudo apt-get install -y nginx curl git certbot python3-certbot-nginx
+
+            # ── App setup as devops user ──────────────────────────────────────
             sudo -u devops bash << 'APPEOF'
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -66,31 +71,25 @@ jobs:
             pm2 restart nextjs-app || pm2 start npm --name "nextjs-app" -- start
             pm2 save
             APPEOF
-            # pm2 startup must run as root with the devops node path
+
+            # ── pm2 startup (must run as root) ────────────────────────────────
             NODE_BIN=$(sudo -u devops bash -c 'source $HOME/.nvm/nvm.sh && nvm which 20' | xargs dirname)
             sudo env PATH=$PATH:$NODE_BIN pm2 startup systemd -u devops --hp /home/devops || true
-            # Nginx config
+
+            # ── Nginx: HTTP-only config first (no SSL block) ──────────────────
+            # This avoids nginx -t failing when certs don't exist yet.
+            sudo mkdir -p /var/www/certbot
             sudo tee /etc/nginx/sites-available/default > /dev/null << NGINXEOF
             server {
                 listen 80;
                 server_name ${DOMAIN};
+
+                # Allow certbot ACME challenge
                 location /.well-known/acme-challenge/ {
                     root /var/www/certbot;
                 }
-                location / {
-                    return 301 https://\$host\$request_uri;
-                }
-            }
-            server {
-                listen 443 ssl;
-                server_name ${DOMAIN};
-                ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-                ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-                server_tokens off;
-                add_header X-Frame-Options "DENY" always;
-                add_header X-Content-Type-Options "nosniff" always;
-                add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-                add_header Content-Security-Policy "frame-ancestors 'none'" always;
+
+                # Block sensitive paths
                 location ~ /\.git {
                     deny all;
                     return 404;
@@ -99,6 +98,7 @@ jobs:
                     deny all;
                     return 404;
                 }
+
                 location / {
                     proxy_pass http://localhost:3000;
                     proxy_http_version 1.1;
@@ -110,14 +110,30 @@ jobs:
                 }
             }
             NGINXEOF
+
             sudo nginx -t
             sudo systemctl restart nginx
-            # SSL
-            sudo apt install -y certbot python3-certbot-nginx
-            sudo certbot --nginx -d "$DOMAIN" \
+
+            # ── SSL: certbot obtains cert and adds the 443 block itself ───────
+            # On first run: obtains cert, rewrites nginx config with SSL + redirect.
+            # On subsequent runs: renews if needed, skips reconfig if cert is valid.
+            sudo certbot --nginx \
+              -d "$DOMAIN" \
               --non-interactive \
               --agree-tos \
               -m "$EMAIL" \
               --redirect || true
+
+            # ── Security headers: inject into the SSL server block ────────────
+            # certbot writes the 443 block; we add headers after it runs.
+            HEADERS='    server_tokens off;\n    add_header X-Frame-Options "DENY" always;\n    add_header X-Content-Type-Options "nosniff" always;\n    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n    add_header Content-Security-Policy "frame-ancestors '"'"'none'"'"'" always;'
+
+            # Only add headers if they haven't been added yet
+            if ! sudo grep -q "X-Frame-Options" /etc/nginx/sites-available/default; then
+              sudo sed -i "/listen 443 ssl/a\\${HEADERS}" /etc/nginx/sites-available/default
+            fi
+
+            sudo nginx -t
             sudo systemctl reload nginx
-            echo "Deployment completed successfully"
+
+            echo "✅ Deployment completed successfully"
