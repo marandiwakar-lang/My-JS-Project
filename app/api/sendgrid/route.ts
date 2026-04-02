@@ -15,7 +15,48 @@ function sanitize(value: string, max = 200): string {
   return String(value).replace(/[\r\n\t]/g, ' ').trim().slice(0, max);
 }
 
+// ── FIX 3: HTML escaper — prevents HTML injection in email body ─────────────
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+// ── FIX 1: Rate limiting — prevents inbox flooding ──────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT = 5;      // max 5 requests
+const WINDOW_MS  = 60000;  // per 60 seconds
+
+function isRateLimited(ip: string): boolean {
+  const now   = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || now > entry.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + WINDOW_MS });
+    return false;
+  }
+  if (entry.count >= RATE_LIMIT) return true;
+  entry.count++;
+  return false;
+}
+
 export async function POST(req: Request) {
+
+  // ── FIX 1 applied: check rate limit before processing anything ─────────────
+  const ip = req.headers.get('x-real-ip')
+          ?? req.headers.get('x-forwarded-for')?.split(',')[0].trim()
+          ?? 'unknown';
+
+  if (isRateLimited(ip)) {
+    return NextResponse.json(
+      { error: 'Too many requests. Please try again later.' },
+      { status: 429 }
+    );
+  }
+
   try {
     const body = await req.json();
 
@@ -34,33 +75,34 @@ export async function POST(req: Request) {
     const safePhone   = sanitize(result.data.phone, 20);
     const safeMessage = sanitize(result.data.message, 2000);
 
+    // ── FIX 3 applied: HTML-escape for use inside HTML email body ──────────
+    const htmlName    = escapeHtml(safeName);
+    const htmlEmail   = escapeHtml(safeEmail);
+    const htmlPhone   = escapeHtml(safePhone);
+    const htmlMessage = escapeHtml(safeMessage);
+
     const apiKey  = process.env.SENDGRID_API_KEY;
     const toEmail = process.env.SENDGRID_TO_EMAIL;
 
-    if (!apiKey) {
-      console.error('SENDGRID_API_KEY is not set');
+    // ── FIX 2 applied: generic error — no internal service names leaked ─────
+    if (!apiKey || !toEmail) {
+      console.error('SendGrid environment variables are not configured');
       return NextResponse.json(
-        { error: 'SendGrid API key not configured' },
-        { status: 500 }
-      );
-    }
-
-    if (!toEmail) {
-      console.error('SENDGRID_TO_EMAIL is not set');
-      return NextResponse.json(
-        { error: 'Recipient email not configured' },
+        { error: 'Service temporarily unavailable. Please try again later.' },
         { status: 500 }
       );
     }
 
     sendgrid.setApiKey(apiKey);
 
-    // ── 5. Use only sanitized variables — never raw body data ─────────────
+    // ── 5. Use sanitized + escaped variables — never raw body data ─────────
     const msg = {
       to:      toEmail,
       from:    toEmail,
       subject: 'New Contact Form Submission',
-      text:    `Name: ${safeName}\nEmail: ${safeEmail}\nPhone: ${safePhone}\nMessage: ${safeMessage}`,
+      // Plain-text version uses safe* (no HTML needed)
+      text: `Name: ${safeName}\nEmail: ${safeEmail}\nPhone: ${safePhone}\nMessage: ${safeMessage}`,
+      // HTML version uses html* (HTML-escaped)
       html: `
         <html>
           <body style="background: #f6f6f7; padding: 40px 0;">
@@ -71,10 +113,10 @@ export async function POST(req: Request) {
               <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
               <div style="font-size: 16px; color: #222; margin-bottom: 24px;">
                 <p style="margin: 0 0 16px 0;">You have a new contact form submission:</p>
-                <p style="margin: 0 0 8px 0;"><strong>Name:</strong> ${safeName}</p>
-                <p style="margin: 0 0 8px 0;"><strong>Email:</strong> ${safeEmail}</p>
-                <p style="margin: 0 0 8px 0;"><strong>Phone:</strong> ${safePhone}</p>
-                <p style="margin: 0 0 8px 0;"><strong>Message:</strong> ${safeMessage}</p>
+                <p style="margin: 0 0 8px 0;"><strong>Name:</strong> ${htmlName}</p>
+                <p style="margin: 0 0 8px 0;"><strong>Email:</strong> ${htmlEmail}</p>
+                <p style="margin: 0 0 8px 0;"><strong>Phone:</strong> ${htmlPhone}</p>
+                <p style="margin: 0 0 8px 0;"><strong>Message:</strong> ${htmlMessage}</p>
               </div>
             </div>
           </body>
@@ -93,6 +135,10 @@ export async function POST(req: Request) {
       console.error('SendGrid Response Body:', sgError.response?.body);
     }
 
-    return NextResponse.json({ error: 'Error sending email' }, { status: 500 });
+    // Generic error — no internal details exposed to the client
+    return NextResponse.json(
+      { error: 'Something went wrong. Please try again later.' },
+      { status: 500 }
+    );
   }
 }
